@@ -1,0 +1,345 @@
+---
+title: "Materials Project"
+author: "Bogna Kilanowska 148252"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive summary
+
+The US Department of Energy has launched the Materials Project initiative, which provides open source data on thousands of materials. In this analysis, I focus on the MP Batteries dataset, which has been released as part of the project. The aim of the analysis is to present the characteristics of the batteries. The analysis focuses on 4 different aspects: distribution of attributes, correlations between attributes, characteristics depending on working ion and predictions. 
+
+## Technical insights
+The analysis is performed with the R language. I used the following packages:
+- `dplyr` to clean up the dataset and get better control over the data,
+- `kableExtra`, `ggcorrplot`, `GGally` and `plotly` to prepare visualisations,
+- `caret`, `randomForest`, `RRF` to run regressions on the dataset.
+
+To ensure the reproducibility of my work, I set the seed (initial state for random number generation) to 379.
+``` {r libraries, include=FALSE}
+require(dplyr)
+require(kableExtra)
+require(ggcorrplot)
+require(GGally)
+require(plotly)
+require(caret)
+require(randomForest)
+require(RRF)
+```
+
+
+``` {r seed, include=FALSE}
+set.seed(379)
+```
+
+## Dataset description
+The MP Batteries dataset comes from [materials project website](https://next-gen.materialsproject.org/). It consists of 4351 observations and 17 variables: 1 identification, 4 string type, 1 discrete and 11 continuous. There are no missing values in the dataset.
+
+``` {r load data}
+X <- read.csv("./data/mp_batteries.csv", header = TRUE, sep = ",")
+
+X %>%
+  head %>%
+  kable %>%
+  kable_styling("striped", full_width = F) %>% 
+  kableExtra::scroll_box(width = "800px")
+```
+
+``` {r missing values}
+colSums(is.na(X))
+```
+
+``` {r short summary}
+str(X)
+
+for (name in colnames(X))
+{
+  if(is.numeric(X[[name]]))
+  {
+    cat("\n")
+    print(name)
+    print(summary(X[[name]]))
+  }
+}
+
+rm(list = c("name"))
+```
+## Distribution of attributes
+### Density plots
+
+** String variables **
+While the ranges of the `battery formula`, `formula charge` and `formula discharge` attributes are wide compared to the number of observations, the range of the `working ion` attribute is narrow and consists of 11 values. The vast majority of the batteries studied have `Li` as the working ion (the main ion that transports electric charge). Other types of batteries included in the dataset are calcium, magnesium, sodium and zinc. There are also batteries with `Al`, `Cs`, `K`, `Rb`, `Y` as the working ion, but the number of observations with them in the dataset is marginal. Therefore, in the following analysis I combine them into the category `Other`.
+
+** Continuous variables **
+The distribution density plot of each continuous attribute can be described as a plot with a high peak and a long tail. Among them, the most evenly distributed is `atomic fracton discharge` variable.
+
+** Discrete variables **
+`steps` is the only discrete attribute in the dataset. There are very few observations with more than 1 step between full charge and discharge. 
+
+``` {r dataset analysis}
+for (name in colnames(X))
+{
+  if(name == "Battery.ID" ) next
+  
+  threshold <- 10
+  
+  if(is.numeric(X[[name]]) && n_distinct(X[[name]]) > threshold)
+  {
+    plot(density(X[[name]]), main = name)
+  }else if(n_distinct(X[[name]]) <= threshold){
+    barplot(table(X[[name]]), main = name)
+  }else{
+    barplot(table(X[[name]]), main = paste(name, ": ", n_distinct(X[[name]]), " distinct values"), xaxt = 'n')
+    # print(paste(name, ": ", n_distinct(X[[name]]), " distinct values"))
+  }
+
+}
+
+rm(list = c("name", "threshold"))
+```
+### Histogram panels
+In order to gain more insight into the reasons for such a specific distribution of numerical variables, I present histograms of them, divided into panels according to working ion. The panels are presented for 6 categories: `Li`, `Ca`, `Mg`, `Na`, `Zn` and `Other` combining the rest of the observations. Note that for better visibility I do not show some outliers on the panels - they are filtered out by this line of code: `xlim(quantile(mutated_X[,i], probs = c(0.05)), quantile(mutated_X[,i], probs = c(0.95)))`.
+
+Due to the majority of observations of batteries with lithium as the working ion, the distribution plots are most affected by this. It can be observed that while the distribution for some characteristics is similar for each battery category (`max delta volume`, `stability charge`, `stability discharge`), there are also characteristics that have different distributions for batteries with different working ions. In the next section I analyse which characteristics describe different battery categories.
+``` {r dataset analysis panel}
+mutated_X <- X %>%
+    mutate(Working.Ion.Other = ifelse(Working.Ion %in% c("Li", "Ca", "Mg", "Na", "Zn"), Working.Ion, "Other" ))
+
+for (i in 6:17) {
+  p <- mutated_X %>%
+    ggplot(aes(x=mutated_X[,i])) +
+      geom_histogram(bins = 20) +
+      xlim(quantile(mutated_X[,i], probs = c(0.05)), quantile(mutated_X[,i], probs = c(0.95))) +
+      facet_grid(cols = vars(Working.Ion.Other)) +
+      xlab(colnames(mutated_X)[i])
+  
+  print(p)
+}
+
+rm(list = c("i", "p"))
+```
+## Characteristics depending on working ion
+In this section I want to discover some characteristics of batteries with respect to the working ion. Due to the overrepresentation of lithium batteries in the dataset, I create a sample where there are 200 observations for each battery type. Note that I still use the `other` category for combination of underrepresented batteries. 
+
+### Histograms
+Once again I use the histogram to show the distribution of attribute values. Each category is now represented by a different colour instead of being on a separate panel. This helps me to better see the relationship between attribute values for different types of bettery. Below I present my observations regarding the working ion.
+
+** Lithum (Li) **
+Lithum batteries are characterised by a high average voltage (between 3 and 5 volts). Most of them have a volumetric capacity value below 500 and a stability charge value below 1.2. The stability discharge of lithium batteries is in most cases also below 1.2.
+
+** Calcium (Ca) **
+Calcium batteries reach values from a very wide range for almost all attributes, except stability charge where they reach values below 1.5 in most cases, and atomic fraction discharge where the values are also mostly below 1.5.
+
+** Magnesium (Mg) **
+Similar to calcium batteries, the variance for most attributes is high for magnesium batteries. However, there are some characteristics specific to this type of battery. Their average voltage is less than 4 and their maximum delta volume is less than 0.17.
+
+** Sodium (Na) **
+Sodium batteries are characterised by low volumetric (below 600) and gravimetric (below 200) capacities. They also have low values for charge stability (less than 2.0) and discharge stability (less than 1.5).
+
+** Zinc (Zn) **
+Znic batteries have an average voltage of less than 3.0. Their volumetric energy is mostly below 2500 and their gravimetric energy below 600. They also achieve low values for atomic fraction discharge and stability discharge (below 2.0).
+
+``` {r dataset analysis combined on sample}
+mutated_sample_X <- mutated_X %>% 
+  group_by(Working.Ion.Other) %>% 
+  slice_sample(n=200)
+
+for (i in c(6:15,17)) {
+  p <- mutated_sample_X %>%
+    ggplot(aes(x=mutated_sample_X[[colnames(mutated_sample_X)[i]]], fill=Working.Ion.Other, color=Working.Ion.Other)) +
+      geom_histogram(bins = 20, alpha = 0.5)  +
+      xlim(quantile(mutated_X[[colnames(mutated_X)[i]]], probs = c(0.05)), quantile(mutated_X[[colnames(mutated_X)[i]]], probs = c(0.95))) +
+      ylim(0,250) +
+      xlab(colnames(mutated_sample_X)[i])
+  
+  print(p)
+}
+
+rm(list = c("i", "p"))
+```
+### Attribute importance analysis
+My observations from the previous section can be supported by a variable importance plot. As can be seen on the graph, 'stability discharge', 'volumetric energy', 'gravimetric energy', 'stability charge' and 'atomic fraction discharge' are the 5 most important attributes in distinguishing batteries in terms of their working iron. All 5 attributes are also present in my conclusions from the histograms presented in the previous paragraph.
+
+``` {r dataset analysis features}
+rrfMod <- train(Working.Ion.Other ~ ., data=mutated_sample_X[,c(10:15,17:18)], method="RRF")
+rrfImp <- varImp(rrfMod, scale=F)
+plot(rrfImp, top = 5, main='Variable Importance')
+
+rm(list = c("rrfImp", "rrfMod"))
+```
+## Correlations between attributes
+The next step is to analyse linear correlations between attributes. I only compute correlations for numerical variables. Note that I do not present results for the variables `max delta volume` and `steps`. According to the documentation, `max delta volume` is calculated from two other variables: `stability charge` and `stability discharge`. The `steps` variable has a very low variance, most observations have a value of steps equal to 1.
+
+### Results
+The correlation matrix below shows, that the `gravimetric energy` and `volumetric energy` have very strong correlation between each other. Similarly `gravimetric capacity` and `volumetric capacity` are very strongly correlated with each other. Slightly smaller  but still strong correlations are found between `atomic fracton discharge` and `gravimetric capacity`, `atomic fracton discharge` and `volumetric capacity`, `average voltage` and `gravimetric energy`.
+
+``` {r correlations}
+mutated_sample_X %>%
+  ungroup%>%
+  select(c(Average.Voltage:Stability.Discharge, Max.Voltage.Step)) %>%
+  cor() %>%
+  round(1) %>%
+  ggcorrplot(type = "lower", lab = TRUE)
+```
+Below I present 5 more correlation matrices. Each of them shows correlation values between attributes depending on the working ion in the battery.
+
+** Lithium (Li) **
+For lithium batteries, `stability charge` and `stability discharge` values are very strongly correlated with each other. `gravimetric energy` is strongly correlated with `gravimetric capacity`. The same is true for `volumetric energy` and `volumetric capacity`.
+
+** Calcium (Ca) **
+Similar to lithium batteries, calcium batteries also have a strongly correlated `gravimetric capacity` with `gravimetric energy` and `volumetric energy` with `volumetric capacity`. Interestingly, calcium batteries have  an inverse correlation between `average voltage` and `stability discharge`. This is the only strong inverse correlation I have observed.
+
+** Magnesium (Mg) **
+Magnesium batteries have perfect correlation between `gravimetric energy` and `volumetric eneregy`. They are also very strongly associated `volumetric capacity` and `gravimetric capacity` with `atomic fraction discharge`.
+
+** Sodium (Na) **
+As with lithium batteries, `stability charge` and `stability discharge` are very strongly correlated for sodium batteries.
+
+** Zinc (Zn) **
+Zinc batteries have perfect correlations between `gravimetric energy` and `volumetric eneregy`, `gravimetric capacity` and ``volumetric capacity`, `volumetric capacity` and `atomic fraction discharge`.
+
+
+``` {r correlations working ion}
+for(ion in c("Li", "Ca", "Mg", "Na", "Zn"))
+{
+  p <- X %>%
+    filter(Working.Ion == ion) %>%
+    ungroup %>%
+    select(c(Average.Voltage:Stability.Discharge, Max.Voltage.Step)) %>%
+    cor() %>%
+    round(1) %>%
+    ggcorrplot(type = "lower", lab = TRUE) +
+    ggtitle(ion)
+  
+  print(p)
+}
+
+rm(list = c("ion", "p"))
+
+```
+
+### Plots
+To better understand the correlations between attributes I plot graphs for the variables with the strongest associations.
+``` {r correlations plot}
+mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Energy, y=Volumetric.Energy)) +
+    geom_point(aes(color=Working.Ion.Other)) +
+    geom_smooth(method = "gam") +
+    geom_rug(aes(color=Working.Ion.Other))
+
+mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Capacity, y=Volumetric.Capacity)) +
+    geom_point(aes(color=Working.Ion.Other)) +
+    geom_smooth(method = "gam") +
+    geom_rug(aes(color=Working.Ion.Other))
+
+mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Capacity, y=Atomic.Fraction.Discharge)) +
+    geom_point(aes(color=Working.Ion.Other)) +
+    geom_smooth(method = "gam") +
+    geom_rug(aes(color=Working.Ion.Other))
+
+mutated_sample_X %>%
+  ggplot(aes(x=Volumetric.Capacity, y=Atomic.Fraction.Discharge)) +
+    geom_point(aes(color=Working.Ion.Other)) +
+    geom_smooth(method = "gam") +
+    geom_rug(aes(color=Working.Ion.Other))
+
+mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Energy, y=Average.Voltage)) +
+    geom_point(aes(color=Working.Ion.Other)) +
+    geom_smooth(method = "gam") +
+    geom_rug(aes(color=Working.Ion.Other))
+
+```
+To examine correlations between attributes for different battery types, I use interactive plots that allow the presented observations to be filtered by working ion. 
+
+The linear correlation between `volumetric energy` and `gravimetric energy` is strong for all battery types. For batteries with magnesium as working ion `volumetric capacity` grows linearly with `gravimetric capacity`, until it reaches 4000.
+
+``` {r interactive charts}
+p <- mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Energy, y=Volumetric.Energy)) +
+    geom_point(aes(color=Working.Ion.Other))
+ggplotly(p)
+
+p <- mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Capacity, y=Volumetric.Capacity)) +
+    geom_point(aes(color=Working.Ion.Other))
+ggplotly(p)
+
+p <- mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Capacity, y=Atomic.Fraction.Discharge)) +
+    geom_point(aes(color=Working.Ion.Other))
+ggplotly(p)
+
+p <- mutated_sample_X %>%
+  ggplot(aes(x=Volumetric.Capacity, y=Atomic.Fraction.Discharge)) +
+    geom_point(aes(color=Working.Ion.Other))
+ggplotly(p)
+
+p <- mutated_sample_X %>%
+  ggplot(aes(x=Gravimetric.Energy, y=Average.Voltage)) +
+    geom_point(aes(color=Working.Ion.Other))
+ggplotly(p)
+
+rm(list = c("p"))
+
+```
+On the 3D graph I plot 3 of the 5 most important attributes presented in `Attribute importance analysis` section. However I do not observe any separate group on the plot.
+``` {r interactive charts 3D}
+plot_ly(mutated_sample_X, x=~Atomic.Fraction.Discharge, y=~Stability.Discharge, z=~Volumetric.Energy, type="scatter3d", color=~Working.Ion.Other)
+
+```
+
+## Tendencies in betteries matterials research
+Most of the observations presented in the dataset are for lithium batteries. There is also a focus on calcium, magnesium, sodium and zinc batteries. There are a few observations for other types of batteries, but for now these are marginal examples. 
+
+## Battery type classifier
+Due to the large presence of lithium batteries in the dataset, I tryto create a classifier to classify whether a battery is lithium or not.
+``` {r predictions create classifier}
+li_X <- X %>%
+    mutate(Li = ifelse(Working.Ion %in% c("Li"), 'Yes', 'No' )) %>%
+    select(c(Average.Voltage:Stability.Discharge, Max.Voltage.Step, Li))
+```
+
+I split the data set into training and test data with a ratio of 9:1.
+``` {r predictions test train split}
+inTraining <-
+  createDataPartition(y=li_X$Li, p=0.9, list=FALSE)
+
+X_Train <- li_X[inTraining,]
+X_Test <- li_X[-inTraining,]
+
+rm(list = c("inTraining"))
+```
+
+In training, I use the random forest method with repeated cross-validation with set partition equal to 2 and 5 repetitions.
+```{r predictions traincontrol}
+ctrl <- trainControl(
+    method = "repeatedcv",
+    number = 2,
+    repeats = 5)
+```
+
+```{r predictions fit}
+fit <- train(Li ~ .,
+             data = X_Train,
+             method = "rf",
+             trControl = ctrl,
+             ntree = 10)
+
+fit
+```
+I get an accuracy of 0.8805 on a test data set.
+```{r predictions predict}
+rfClasses <- predict(fit, newdata = X_Test)
+confusionMatrix(data = rfClasses, as.factor(X_Test$Li))
+```
